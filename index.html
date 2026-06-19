@@ -256,7 +256,7 @@ body::before{
       <div class="mode-card" data-mode="tebak">
         <div class="mode-icon">📖</div>
         <h3>Tebak Surah</h3>
-        <p class="mode-desc">Surah dari ayat ini?</p>
+        <p class="mode-desc">Bisa tanpa pilih surah (Acak 30 Juz)</p>
       </div>
       <div class="mode-card" data-mode="kata">
         <div class="mode-icon">🔍</div>
@@ -270,7 +270,7 @@ body::before{
       </div>
     </div>
 
-    <div class="section-label">Pilih Surah (1-114)</div>
+    <div class="section-label">Pilih Surah (Opsional khusus Tebak Surah)</div>
     <input type="text" id="surah-search" class="search-box" placeholder="Cari nama surah (misal: Al-Baqarah)...">
     <div class="surah-list-container" id="surah-list"></div>
 
@@ -590,16 +590,87 @@ async function fetchSurahData(surahNumbers) {
   }
 }
 
+// Fetch Random Ayahs for Tebak Surah mode
+async function fetchRandomAyahs(count) {
+  const verses = [];
+  const fetchPromises = [];
+  for(let i=0; i<count; i++) {
+    const randomNum = Math.floor(Math.random() * 6236) + 1;
+    fetchPromises.push(
+      fetch(`https://api.alquran.cloud/v1/ayah/${randomNum}/editions/quran-uthmani,id.indonesian`)
+        .then(res => res.json())
+        .then(data => {
+          if(data.code === 200) {
+            const arAyah = data.data[0];
+            const idAyah = data.data[1];
+            const surahNum = arAyah.surah.number;
+            const meta = surahMeta.find(s => s.n === surahNum);
+            verses.push({
+              ar: arAyah.text,
+              tr: idAyah.text,
+              surahIdx: surahNum,
+              surahName: meta ? meta.nm : arAyah.surah.englishName,
+              verseNum: arAyah.numberInSurah,
+              isLast: false
+            });
+          }
+        }).catch(e => console.error("Error fetching random ayah", e))
+    );
+  }
+  
+  await Promise.all(fetchPromises);
+  // Filter out empty texts or bismillah-only artifacts if any, and take up to 'count'
+  return verses.filter(v => v.ar && v.ar.trim() !== "" && v.tr).slice(0, count);
+}
+
 // ===================== START GAME =====================
 async function startGame(){
-  if(game.selectedSurahs.length===0){
+  // Jika mode Tebak Surah dan tidak ada surah yang dipilih, ambil acak dari 30 Juz
+  if(game.mode === "tebak" && game.selectedSurahs.length === 0) {
+    showLoading("Mengambil ayat acak dari 30 Juz...");
+    const verses = await fetchRandomAyahs(game.numQ);
+    
+    if(!verses || verses.length === 0) {
+      hideLoading();
+      showToast("Gagal memuat data. Cek koneksi internet.");
+      return;
+    }
+
+    game.questions = verses.map(verse => {
+      const options = [{text: verse.surahName, ar: verse.ar}];
+      // Ambil 3 surah acak dari 114 surah untuk opsi yang menantang
+      const wrongs = shuffle(surahMeta.filter(s => s.n !== verse.surahIdx)).slice(0, 3);
+      wrongs.forEach(w => options.push({text: w.nm, ar: ""}));
+      
+      return {
+        type:"tebak",
+        hint:"Ayat ini berasal dari surah?",
+        displayAr: verse.ar,
+        displayTr: verse.tr,
+        ref: "",
+        options: shuffle(options),
+        answer: verse.surahName,
+        answerTr: "",
+        answerRef: `${verse.surahName} : ${verse.verseNum}`,
+        isSurahGuess: true
+      };
+    });
+
+    game.idx=0;game.score=0;game.correct=0;game.streak=0;game.maxStreak=0;
+    hideLoading();
+    showScreen("game-screen");
+    renderQuestion();
+    return;
+  }
+
+  // Jika bukan mode Tebak Surah, atau ada surah yang dipilih, wajib pilih surah
+  if(game.selectedSurahs.length === 0){
     showToast("Pilih minimal 1 surah dulu!");
     return;
   }
 
   showLoading("Memuat Ayat Al-Qur'an...");
   
-  // Fetch data if not already fetched
   const needFetch = game.selectedSurahs.some(s => !game.allFetchedVerses.some(v => v.surahIdx === s));
   
   if(needFetch) {
@@ -614,13 +685,11 @@ async function startGame(){
     );
   }
 
-  // Filter verses based on selected surahs
   const availableVerses = game.allFetchedVerses.filter(v => game.selectedSurahs.includes(v.surahIdx));
   
-  // Generate questions
   game.questions = generateQuestions(availableVerses);
   
-  if(game.questions.length===0){
+  if(game.questions.length === 0){
     hideLoading();
     showToast("Tidak ada soal yang bisa dibuat. Pilih surah lain!");
     return;
@@ -655,12 +724,13 @@ function generateQuestions(allVerses) {
       });
     } else if(game.mode==="tebak"){
       const options=[verse];
-      const wrongs = shuffle(allVerses.filter(v=>v.surahIdx!==verse.surahIdx)).slice(0,3);
-      if(wrongs.length < 3) {
-        const extraWrongs = shuffle(allVerses.filter(v=>v!==verse&&!wrongs.includes(v))).slice(0, 3-wrongs.length);
-        wrongs.push(...extraWrongs);
-      }
-      options.push(...wrongs);
+      // Modifikasi: Ambil opsi salah dari seluruh 114 surah agar lebih menantang
+      const wrongs = shuffle(surahMeta.filter(s => s.n !== verse.surahIdx)).slice(0,3);
+      wrongs.forEach(w => {
+        // Cari ayat random dari surah tersebut jika ada, atau buat dummy
+        const wVerse = allVerses.find(v => v.surahIdx === w.n);
+        options.push({surahName: w.nm, surahIdx: w.n, ar: wVerse ? wVerse.ar : ""});
+      });
       questions.push({
         type:"tebak",
         hint:"Ayat ini berasal dari surah?",
